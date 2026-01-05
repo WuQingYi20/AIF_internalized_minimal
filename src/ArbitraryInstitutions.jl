@@ -27,9 +27,9 @@ include("World/Types.jl")
 
 # Include core modules
 include("Brain/FactorGraph.jl")
+include("World/Physics.jl")  # Physics before ActionSelection (ActionSelection uses Physics)
 include("Brain/Learning.jl")
 include("Brain/ActionSelection.jl")
-include("World/Physics.jl")
 include("World/Dynamics.jl")
 
 # Include analytics

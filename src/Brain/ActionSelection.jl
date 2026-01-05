@@ -8,6 +8,7 @@ module ActionSelection
 
 using ..BrainTypes
 using ..WorldTypes
+using ..Physics: GameType, get_payoff_matrix
 using Statistics
 
 export select_action, compute_expected_free_energy,
@@ -190,23 +191,26 @@ function compute_expected_free_energy(agent::InstitutionAgent,
 end
 
 """
-    compute_expected_free_energy_simple(agent, action, opponent_label) -> Float64
+    compute_expected_free_energy_with_payoffs(agent, action, opponent_label, game) -> Float64
 
-Simplified EFE computation based on expected payoff and uncertainty.
-More interpretable but less theoretically grounded.
+EFE computation using actual game payoffs.
+Uses the payoff matrix from the specified game type.
 """
-function compute_expected_free_energy_simple(agent::InstitutionAgent,
-                                             action::Bool,
-                                             opponent_label::Bool)
+function compute_expected_free_energy_with_payoffs(agent::InstitutionAgent,
+                                                   action::Bool,
+                                                   opponent_label::Bool,
+                                                   game::GameType)
     p_opponent_cooperate = predict_opponent_action(agent, opponent_label)
 
+    # Get actual payoff matrix for this game
+    payoffs = get_payoff_matrix(game)
+    # payoffs[1,1] = CC, payoffs[1,2] = CD, payoffs[2,1] = DC, payoffs[2,2] = DD
+
     # Expected "value" under this action (higher is better, so negate for EFE)
-    if action  # Cooperating
-        # Payoff if opponent cooperates (CC): 3, if defects (CD): 0
-        expected_value = p_opponent_cooperate * 3.0 + (1 - p_opponent_cooperate) * 0.0
-    else  # Defecting
-        # Payoff if opponent cooperates (DC): 5, if defects (DD): 1
-        expected_value = p_opponent_cooperate * 5.0 + (1 - p_opponent_cooperate) * 1.0
+    if action  # Cooperating (row 1)
+        expected_value = p_opponent_cooperate * payoffs[1,1] + (1 - p_opponent_cooperate) * payoffs[1,2]
+    else  # Defecting (row 2)
+        expected_value = p_opponent_cooperate * payoffs[2,1] + (1 - p_opponent_cooperate) * payoffs[2,2]
     end
 
     # Ambiguity term
@@ -220,11 +224,13 @@ end
     select_action(agent, opponent_label, config) -> Bool
 
 Select action (cooperate=true, defect=false) using Expected Free Energy.
+Uses the game type from config to compute expected payoffs.
 """
 function select_action(agent::InstitutionAgent, opponent_label::Bool, config)::Bool
-    # Compute EFE for each action
-    G_cooperate = compute_expected_free_energy(agent, true, opponent_label)
-    G_defect = compute_expected_free_energy(agent, false, opponent_label)
+    # Compute EFE for each action using actual game payoffs
+    game = config.game_type
+    G_cooperate = compute_expected_free_energy_with_payoffs(agent, true, opponent_label, game)
+    G_defect = compute_expected_free_energy_with_payoffs(agent, false, opponent_label, game)
 
     # Convert to policy via softmax over negative EFE (lower G = higher probability)
     β = agent.cognitive_state.action_precision
