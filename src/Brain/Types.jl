@@ -8,7 +8,7 @@ module BrainTypes
 using Distributions
 
 export CognitiveState, ActiveModel, NEUTRAL, INSTITUTIONAL,
-       BeliefState, PreferredOutcome,
+       BeliefState,
        predict_cooperation, global_cooperation_mean,
        ingroup_cooperation_mean, outgroup_cooperation_mean
 
@@ -75,35 +75,6 @@ function outgroup_cooperation_mean(b::BeliefState)
 end
 
 """
-    PreferredOutcome
-
-Agent's preferences over interaction outcomes.
-Used for computing risk component of Expected Free Energy.
-"""
-struct PreferredOutcome
-    prefer_cooperation::Float64     # Preference weight for mutual cooperation
-    prefer_exploitation::Float64    # Preference weight for exploiting defector
-    prefer_being_exploited::Float64 # Preference weight for being exploited
-    prefer_mutual_defection::Float64 # Preference weight for mutual defection
-
-    function PreferredOutcome(;
-        cooperation::Float64 = 0.7,
-        exploitation::Float64 = 0.1,
-        being_exploited::Float64 = 0.05,
-        mutual_defection::Float64 = 0.15
-    )
-        # Normalize to probability distribution
-        total = cooperation + exploitation + being_exploited + mutual_defection
-        new(
-            cooperation / total,
-            exploitation / total,
-            being_exploited / total,
-            mutual_defection / total
-        )
-    end
-end
-
-"""
     CognitiveState
 
 Complete cognitive state of an agent, including beliefs, model selection state,
@@ -111,18 +82,18 @@ and internalization parameters.
 
 # Fields
 - `beliefs::BeliefState`: Posterior beliefs about cooperation rates
+- `initial_prior::Tuple{Float64,Float64}`: Initial Beta prior (α₀, β₀) for model evidence
 - `active_model::ActiveModel`: Currently active generative model
 - `γ::Float64`: Precision/confidence in institutional prior (internalization depth)
 - `action_precision::Float64`: β for softmax action selection
-- `preferred_outcomes::PreferredOutcome`: Outcome preferences for EFE
 - `model_evidence::Dict{ActiveModel,Float64}`: Accumulated log evidence for each model
 """
 mutable struct CognitiveState
     beliefs::BeliefState
+    initial_prior::Tuple{Float64,Float64}  # Store initial prior for model evidence computation
     active_model::ActiveModel
     γ::Float64  # Internalization precision
     action_precision::Float64  # Action selection temperature
-    preferred_outcomes::PreferredOutcome
     model_evidence::Dict{ActiveModel,Float64}
 
     function CognitiveState(;
@@ -132,10 +103,10 @@ mutable struct CognitiveState
     )
         new(
             BeliefState(prior=prior_cooperation),
+            prior_cooperation,  # Store the initial prior
             NEUTRAL,  # Start with neutral model
             γ,
             action_precision,
-            PreferredOutcome(),
             Dict(NEUTRAL => 0.0, INSTITUTIONAL => 0.0)
         )
     end

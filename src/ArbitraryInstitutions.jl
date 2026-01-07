@@ -98,6 +98,7 @@ Configuration parameters for the institution emergence simulation.
 - `initial_precision::Float64`: Starting γ (internalization depth)
 - `max_precision::Float64`: Maximum γ value
 - `min_precision::Float64`: Minimum γ value
+- `γ_update_factor::Float64`: Multiplicative factor for γ updates (default: 1.05)
 - `prior_cooperation::Tuple{Float64,Float64}`: Beta prior for cooperation rate
 - `action_precision::Float64`: β for action selection softmax
 - `structure_learning_threshold::Int`: Min observations before model comparison
@@ -110,6 +111,7 @@ Base.@kwdef struct SimulationConfig
     initial_precision::Float64 = 1.0
     max_precision::Float64 = 10.0
     min_precision::Float64 = 0.1
+    γ_update_factor::Float64 = 1.05
     prior_cooperation::Tuple{Float64,Float64} = (1.0, 1.0)
     action_precision::Float64 = 2.0
     structure_learning_threshold::Int = 10

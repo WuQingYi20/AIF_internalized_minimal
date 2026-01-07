@@ -2,7 +2,7 @@
 
 julia_version = "1.12.3"
 manifest_format = "2.0"
-project_hash = "6e8657ed80e903d242ba25dc23ee0c106ace2899"
+project_hash = "ca43c3228095e29fbbb4bf4bccaa22e94e64b83c"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "f7304359109c768cf32dc5fa2d371565bb63b68a"
@@ -106,7 +106,7 @@ uuid = "27a7e980-b3e6-11e9-2bcd-0b925532e340"
 version = "0.4.2"
 
 [[deps.ArbitraryInstitutions]]
-deps = ["Agents", "CairoMakie", "DataFrames", "Distributions", "GLMakie", "Random", "RxInfer", "Statistics", "StatsBase", "Test", "UUIDs"]
+deps = ["Agents", "CairoMakie", "DataFrames", "Distributions", "GLMakie", "Random", "RxInfer", "SpecialFunctions", "Statistics", "StatsBase", "Test", "UUIDs"]
 path = "."
 uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 version = "0.1.0"

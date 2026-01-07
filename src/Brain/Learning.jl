@@ -19,6 +19,10 @@ export compute_model_comparison, structure_learning_decision,
 
 Compare evidence for neutral (M₀) vs institutional (M₁) models.
 Returns log evidence for each model.
+
+IMPORTANT: Uses the INITIAL priors (α₀, β₀) stored in cognitive_state,
+not the current posteriors. This is mathematically correct for computing
+P(D|M) = ∫ P(D|θ)P(θ|M) dθ where P(θ|M) is the prior.
 """
 function compute_model_comparison(agent::InstitutionAgent, own_label::Bool)
     history = agent.interaction_history
@@ -32,22 +36,23 @@ function compute_model_comparison(agent::InstitutionAgent, own_label::Bool)
     observations = [r.opponent_cooperated for r in history]
     labels = [r.opponent_label == own_label for r in history]  # true = ingroup
 
-    # Get current priors from belief state
-    beliefs = state.beliefs
+    # Use INITIAL priors, not current posteriors!
+    # This is critical: model evidence formula is log B(α₀+k, β₀+n-k) - log B(α₀, β₀)
+    α₀, β₀ = state.initial_prior
 
-    # Evidence for M₀ (global model)
+    # Evidence for M₀ (global model) - uses initial prior
     evidence_M0 = compute_model_evidence_M0(
         observations,
-        beliefs.α_global,
-        beliefs.β_global
+        α₀,
+        β₀
     )
 
-    # Evidence for M₁ (label-aware model)
+    # Evidence for M₁ (label-aware model) - uses same initial prior for both groups
     evidence_M1 = compute_model_evidence_M1(
         observations,
         labels,
-        beliefs.α_ingroup, beliefs.β_ingroup,
-        beliefs.α_outgroup, beliefs.β_outgroup
+        α₀, β₀,  # ingroup prior
+        α₀, β₀   # outgroup prior
     )
 
     return (evidence_M0, evidence_M1)
@@ -139,8 +144,11 @@ end
 """
     update_internalization!(agent, record, config)
 
-Update internalization depth (γ) based on whether outcome matches expectation.
-Successful predictions strengthen the institutional prior.
+Update internalization depth (γ) based on prediction accuracy.
+Uses probabilistic weighting instead of binary threshold.
+
+The update is SYMMETRIC: γ_update_factor for success equals 1/γ_update_factor for failure.
+This ensures no systematic drift when predictions are at chance level.
 """
 function update_internalization!(agent::InstitutionAgent, record::InteractionRecord,
                                  config)
@@ -157,19 +165,32 @@ function update_internalization!(agent::InstitutionAgent, record::InteractionRec
     # Get expected cooperation rate under institutional model
     predicted_rate = predict_cooperation(state, is_ingroup)
 
-    # Did outcome match expectation?
-    # High predicted cooperation + actual cooperation = match
-    # Low predicted cooperation + actual defection = match
-    expected_cooperation = predicted_rate > 0.5
-    outcome_matches = expected_cooperation == opponent_cooperated
-
-    # Update γ based on prediction success
-    if outcome_matches
-        # Strengthen internalization (prediction confirmed)
-        state.γ = min(state.γ * 1.1, config.max_precision)
+    # Compute prediction accuracy (probability assigned to actual outcome)
+    # This is more principled than binary threshold
+    if opponent_cooperated
+        prediction_accuracy = predicted_rate
     else
-        # Weaken internalization (prediction violated)
-        state.γ = max(state.γ * 0.95, config.min_precision)
+        prediction_accuracy = 1.0 - predicted_rate
+    end
+
+    # Symmetric update rate (γ_factor for success = 1/γ_factor for failure)
+    # This ensures E[log(γ)] = 0 when accuracy = 0.5
+    γ_update_factor = config.γ_update_factor
+
+    # Scale update by how confident/accurate the prediction was
+    # Only update significantly when prediction was meaningful (far from 0.5)
+    confidence = abs(prediction_accuracy - 0.5) * 2  # 0 to 1 scale
+
+    if prediction_accuracy > 0.5
+        # Prediction was correct (assigned >50% to actual outcome)
+        # Strengthen internalization proportionally to confidence
+        update_multiplier = 1.0 + (γ_update_factor - 1.0) * confidence
+        state.γ = min(state.γ * update_multiplier, config.max_precision)
+    else
+        # Prediction was wrong (assigned <50% to actual outcome)
+        # Weaken internalization proportionally to confidence
+        update_multiplier = 1.0 + (γ_update_factor - 1.0) * confidence
+        state.γ = max(state.γ / update_multiplier, config.min_precision)
     end
 end
 

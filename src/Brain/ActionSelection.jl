@@ -3,6 +3,16 @@
 
 Action selection via Expected Free Energy (EFE) minimization.
 Implements the core Active Inference decision-making mechanism.
+
+EFE combines:
+- Pragmatic value: Expected payoff from the game (using actual payoff matrix)
+- Epistemic value: Reduction in uncertainty (ambiguity term)
+- Reciprocity value: Preference to match expected opponent behavior (NEW!)
+
+The reciprocity term is key for institutional emergence:
+- Without it: defection is always dominant in PD regardless of predictions
+- With it: agents cooperate with those they expect to cooperate
+- This enables self-fulfilling prophecy: belief → action → confirmation
 """
 module ActionSelection
 
@@ -11,8 +21,9 @@ using ..WorldTypes
 using ..Physics: GameType, get_payoff_matrix
 using Statistics
 
-export select_action, compute_expected_free_energy,
-       softmax, entropy, kl_divergence
+export select_action, compute_expected_free_energy, compute_expected_free_energy_with_payoffs,
+       softmax, entropy, predict_opponent_action, get_action_probabilities,
+       compute_reciprocity_value
 
 """
     softmax(values, β) -> Vector{Float64}
@@ -30,57 +41,21 @@ end
 """
     entropy(p) -> Float64
 
-Compute entropy of a probability distribution.
-H(p) = -∑ p(x) log p(x)
+Compute entropy of a Bernoulli distribution.
+H(p) = -p log(p) - (1-p) log(1-p)
 """
 function entropy(p::Float64)
-    # Entropy of Bernoulli distribution
     if p ≤ 0 || p ≥ 1
         return 0.0
     end
     return -p * log(p) - (1 - p) * log(1 - p)
 end
 
-function entropy(p::Vector{Float64})
-    # Entropy of categorical distribution
-    h = 0.0
-    for pi in p
-        if pi > 0
-            h -= pi * log(pi)
-        end
-    end
-    return h
-end
-
-"""
-    kl_divergence(p, q) -> Float64
-
-Compute KL divergence D_KL(p || q) for Bernoulli distributions.
-"""
-function kl_divergence(p::Float64, q::Float64)
-    # Clamp to avoid numerical issues
-    p = clamp(p, 1e-10, 1 - 1e-10)
-    q = clamp(q, 1e-10, 1 - 1e-10)
-
-    return p * log(p / q) + (1 - p) * log((1 - p) / (1 - q))
-end
-
-function kl_divergence(p::Vector{Float64}, q::Vector{Float64})
-    # KL divergence for categorical distributions
-    kl = 0.0
-    for (pi, qi) in zip(p, q)
-        if pi > 0
-            qi_safe = max(qi, 1e-10)
-            kl += pi * log(pi / qi_safe)
-        end
-    end
-    return kl
-end
-
 """
     predict_opponent_action(agent, opponent_label) -> Float64
 
 Predict probability that opponent will cooperate, given their label.
+Uses the agent's current model (NEUTRAL or INSTITUTIONAL).
 """
 function predict_opponent_action(agent::InstitutionAgent, opponent_label::Bool)
     state = agent.cognitive_state
@@ -89,148 +64,114 @@ function predict_opponent_action(agent::InstitutionAgent, opponent_label::Bool)
 end
 
 """
-    predict_outcome_distribution(agent, own_action, opponent_label) -> Vector{Float64}
+    compute_reciprocity_value(action, p_opponent_cooperate) -> Float64
 
-Predict distribution over outcomes given own action and opponent label.
-Returns [P(CC), P(CD), P(DC), P(DD)] where first letter is own action.
+Compute reciprocity value: how much the agent values cooperating with expected cooperators.
+
+This is ASYMMETRIC reciprocity (not symmetric matching):
+- Only COOPERATION gets a reciprocity bonus
+- The bonus scales with expected opponent cooperation
+- Defection gets no bonus (neutral)
+
+Why asymmetric? In symmetric reciprocity:
+- If p < 0.5, reciprocity favors defection → universal defection equilibrium
+- Institutions can't emerge in PD because defection is always stable
+
+With asymmetric reciprocity:
+- Cooperation gets a bonus when opponent is expected to cooperate
+- This creates potential for differentiated behavior based on predictions
+- If you believe ingroup cooperates more → you cooperate more with ingroup
+
+This is the key mechanism for self-fulfilling prophecy:
+- Belief about ingroup cooperation → more cooperation with ingroup →
+  ingroup actually cooperates more → belief confirmed
 """
-function predict_outcome_distribution(agent::InstitutionAgent,
-                                      own_action::Bool,
-                                      opponent_label::Bool)
-    p_opponent_cooperate = predict_opponent_action(agent, opponent_label)
-
-    if own_action  # Agent cooperates
-        # Outcomes: CC (opponent cooperates) or CD (opponent defects)
-        return [p_opponent_cooperate, 1 - p_opponent_cooperate, 0.0, 0.0]
-    else  # Agent defects
-        # Outcomes: DC (opponent cooperates) or DD (opponent defects)
-        return [0.0, 0.0, p_opponent_cooperate, 1 - p_opponent_cooperate]
+function compute_reciprocity_value(action::Bool, p_opponent_cooperate::Float64)
+    if action  # I'm cooperating
+        # Cooperation bonus = expected opponent cooperation
+        # Higher if I believe opponent will cooperate
+        return p_opponent_cooperate
+    else  # I'm defecting
+        # Defection gets no bonus - it's the "default" rational choice in PD
+        # This asymmetry is key for enabling cooperation-based institutions
+        return 0.0
     end
 end
 
 """
-    get_preferred_outcome_distribution(agent) -> Vector{Float64}
-
-Get agent's preferred distribution over outcomes.
-Returns [P(CC), P(CD), P(DC), P(DD)].
-"""
-function get_preferred_outcome_distribution(agent::InstitutionAgent)
-    prefs = agent.cognitive_state.preferred_outcomes
-    return [
-        prefs.prefer_cooperation,        # CC
-        prefs.prefer_being_exploited,    # CD (agent cooperates, opponent defects)
-        prefs.prefer_exploitation,       # DC (agent defects, opponent cooperates)
-        prefs.prefer_mutual_defection    # DD
-    ]
-end
-
-"""
-    compute_expected_free_energy(agent, action, opponent_label) -> Float64
+    compute_expected_free_energy(agent, action, opponent_label, game) -> Float64
 
 Compute Expected Free Energy (G) for a given action.
 
-G(π) = Ambiguity + Risk
-     = E_Q[H[P(o|s)]] + D_KL[Q(s|π) || P(s)]
+G(π) = -E[Payoff] + Ambiguity - γ × Reciprocity
 
 Where:
-- Ambiguity: expected entropy of observations (uncertainty about outcomes)
-- Risk: divergence from preferred outcomes (goal-directedness)
+- Payoff: Expected payoff from the game's payoff matrix (pragmatic value)
+- Ambiguity: Entropy of predicted opponent action (epistemic uncertainty)
+- Reciprocity: Alignment between my action and expected opponent action (NEW!)
+
+The reciprocity term is weighted by γ (internalization depth):
+- Higher γ → more weight on reciprocity → stronger self-fulfilling prophecy
+- This creates feedback: beliefs → actions → confirmation → stronger beliefs
 
 Lower G is better - agent prefers actions that:
-1. Lead to predictable outcomes (low ambiguity)
-2. Lead to preferred outcomes (low risk)
+1. Lead to high expected payoffs (pragmatic value)
+2. Are taken when opponent behavior is predictable (low ambiguity)
+3. Match the expected behavior of the opponent (reciprocity)
 """
 function compute_expected_free_energy(agent::InstitutionAgent,
                                       action::Bool,
-                                      opponent_label::Bool)
-    # Predict outcome distribution under this action
-    q_outcome = predict_outcome_distribution(agent, action, opponent_label)
-
-    # Get preferred outcome distribution
-    preferred = get_preferred_outcome_distribution(agent)
-
-    # AMBIGUITY: Entropy of predicted observations
-    # Higher entropy = less predictable = worse
-    p_opponent_cooperate = predict_opponent_action(agent, opponent_label)
-    ambiguity = entropy(p_opponent_cooperate)
-
-    # RISK: KL divergence from preferred outcomes
-    # Higher divergence = further from goals = worse
-    # Only consider outcomes possible under this action
-    if action  # Cooperating
-        # Possible outcomes: CC or CD
-        q_relevant = [q_outcome[1], q_outcome[2]]
-        p_relevant = [preferred[1], preferred[2]]
-        # Normalize
-        q_sum = sum(q_relevant)
-        p_sum = sum(p_relevant)
-        if q_sum > 0 && p_sum > 0
-            q_norm = q_relevant ./ q_sum
-            p_norm = p_relevant ./ p_sum
-            risk = kl_divergence(q_norm, p_norm)
-        else
-            risk = 0.0
-        end
-    else  # Defecting
-        # Possible outcomes: DC or DD
-        q_relevant = [q_outcome[3], q_outcome[4]]
-        p_relevant = [preferred[3], preferred[4]]
-        q_sum = sum(q_relevant)
-        p_sum = sum(p_relevant)
-        if q_sum > 0 && p_sum > 0
-            q_norm = q_relevant ./ q_sum
-            p_norm = p_relevant ./ p_sum
-            risk = kl_divergence(q_norm, p_norm)
-        else
-            risk = 0.0
-        end
-    end
-
-    # Total EFE
-    return ambiguity + risk
-end
-
-"""
-    compute_expected_free_energy_with_payoffs(agent, action, opponent_label, game) -> Float64
-
-EFE computation using actual game payoffs.
-Uses the payoff matrix from the specified game type.
-"""
-function compute_expected_free_energy_with_payoffs(agent::InstitutionAgent,
-                                                   action::Bool,
-                                                   opponent_label::Bool,
-                                                   game::GameType)
+                                      opponent_label::Bool,
+                                      game::GameType)
+    state = agent.cognitive_state
     p_opponent_cooperate = predict_opponent_action(agent, opponent_label)
 
     # Get actual payoff matrix for this game
     payoffs = get_payoff_matrix(game)
     # payoffs[1,1] = CC, payoffs[1,2] = CD, payoffs[2,1] = DC, payoffs[2,2] = DD
 
-    # Expected "value" under this action (higher is better, so negate for EFE)
+    # === PRAGMATIC VALUE: Expected payoff ===
     if action  # Cooperating (row 1)
         expected_value = p_opponent_cooperate * payoffs[1,1] + (1 - p_opponent_cooperate) * payoffs[1,2]
     else  # Defecting (row 2)
         expected_value = p_opponent_cooperate * payoffs[2,1] + (1 - p_opponent_cooperate) * payoffs[2,2]
     end
 
-    # Ambiguity term
+    # === EPISTEMIC VALUE: Ambiguity ===
+    # Higher entropy = less predictable = higher EFE (worse)
     ambiguity = entropy(p_opponent_cooperate)
 
-    # Negate value (since lower EFE is better) and add ambiguity
-    return -expected_value + ambiguity
+    # === RECIPROCITY VALUE: Action-belief alignment ===
+    # This is the key for making cognitive beliefs affect behavior!
+    # Weight by γ: internalized agents reciprocate more strongly
+    reciprocity = compute_reciprocity_value(action, p_opponent_cooperate)
+
+    # Only apply reciprocity when using institutional model
+    # (NEUTRAL agents don't differentiate, so reciprocity has no differential effect)
+    if state.active_model == INSTITUTIONAL
+        reciprocity_weight = state.γ
+    else
+        reciprocity_weight = 0.0
+    end
+
+    # EFE = -expected_value + ambiguity - reciprocity_weight * reciprocity
+    # Lower is better: high value, low ambiguity, high reciprocity
+    return -expected_value + ambiguity - reciprocity_weight * reciprocity
 end
+
+# Alias for backward compatibility
+compute_expected_free_energy_with_payoffs = compute_expected_free_energy
 
 """
     select_action(agent, opponent_label, config) -> Bool
 
 Select action (cooperate=true, defect=false) using Expected Free Energy.
-Uses the game type from config to compute expected payoffs.
+Uses softmax policy over negative EFE (lower G = higher probability).
 """
 function select_action(agent::InstitutionAgent, opponent_label::Bool, config)::Bool
-    # Compute EFE for each action using actual game payoffs
     game = config.game_type
-    G_cooperate = compute_expected_free_energy_with_payoffs(agent, true, opponent_label, game)
-    G_defect = compute_expected_free_energy_with_payoffs(agent, false, opponent_label, game)
+    G_cooperate = compute_expected_free_energy(agent, true, opponent_label, game)
+    G_defect = compute_expected_free_energy(agent, false, opponent_label, game)
 
     # Convert to policy via softmax over negative EFE (lower G = higher probability)
     β = agent.cognitive_state.action_precision
@@ -243,14 +184,15 @@ function select_action(agent::InstitutionAgent, opponent_label::Bool, config)::B
 end
 
 """
-    select_action_deterministic(agent, opponent_label) -> Bool
+    select_action_deterministic(agent, opponent_label, game) -> Bool
 
 Select action deterministically (greedy w.r.t. EFE).
 Useful for analysis.
 """
-function select_action_deterministic(agent::InstitutionAgent, opponent_label::Bool)::Bool
-    G_cooperate = compute_expected_free_energy(agent, true, opponent_label)
-    G_defect = compute_expected_free_energy(agent, false, opponent_label)
+function select_action_deterministic(agent::InstitutionAgent, opponent_label::Bool,
+                                     game::GameType)::Bool
+    G_cooperate = compute_expected_free_energy(agent, true, opponent_label, game)
+    G_defect = compute_expected_free_energy(agent, false, opponent_label, game)
 
     return G_cooperate < G_defect
 end
@@ -261,8 +203,9 @@ end
 Get probabilities for cooperate and defect actions.
 """
 function get_action_probabilities(agent::InstitutionAgent, opponent_label::Bool, config)
-    G_cooperate = compute_expected_free_energy(agent, true, opponent_label)
-    G_defect = compute_expected_free_energy(agent, false, opponent_label)
+    game = config.game_type
+    G_cooperate = compute_expected_free_energy(agent, true, opponent_label, game)
+    G_defect = compute_expected_free_energy(agent, false, opponent_label, game)
 
     β = agent.cognitive_state.action_precision
     policy = softmax([-G_cooperate, -G_defect], β)
