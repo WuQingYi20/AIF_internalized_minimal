@@ -70,6 +70,8 @@ We demonstrate that **institution emergence depends on learnability**—whether 
 
 **结论**: 低功能+高可学 (28%) > 高功能+低可学 (4%)，**7倍差距**直接反驳功能主义。
 
+**功能性悖论**: 高功能条件下行为差异仅3.9%，低功能条件下达6.3%——功能性越高，信念的边际效应越低，信号越弱，越难学习。
+
 ---
 
 ## 反直觉预测与验证 / Counter-Intuitive Predictions
